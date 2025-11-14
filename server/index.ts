@@ -1,7 +1,13 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
 import { seedBadges } from "./seed-badges";
+
+const isDev = process.env.NODE_ENV === "development";
+const { setupVite, log } = isDev
+  ? await import("./vite")
+  : { setupVite: null, log: (msg: string) => console.log(msg) };
+const { serveStatic, log: staticLog } = await import("./static");
+const logFn = isDev ? log : staticLog;
 
 const app = express();
 
@@ -40,7 +46,7 @@ app.use((req, res, next) => {
         logLine = logLine.slice(0, 79) + "…";
       }
 
-      log(logLine);
+      logFn(logLine);
     }
   });
 
@@ -64,7 +70,7 @@ app.use((req, res, next) => {
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
-  if (app.get("env") === "development") {
+  if (isDev && setupVite) {
     await setupVite(app, server);
   } else {
     serveStatic(app);
@@ -80,6 +86,6 @@ app.use((req, res, next) => {
     host: "0.0.0.0",
     reusePort: true,
   }, () => {
-    log(`serving on port ${port}`);
+    logFn(`serving on port ${port}`);
   });
 })();

@@ -28,14 +28,19 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
   });
+
+  // Allow overriding secure cookie setting via environment variable for local development
+  const isSecure = process.env.SECURE_COOKIES === "false" ? false : process.env.NODE_ENV === "production";
+  console.log(`Session cookie secure setting: ${isSecure} (NODE_ENV: ${process.env.NODE_ENV}, SECURE_COOKIES: ${process.env.SECURE_COOKIES})`);
+
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: true, // Changed to true to save new sessions
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: isSecure,
       maxAge: sessionTtl,
     },
   });
@@ -68,6 +73,86 @@ export async function setupAuth(app: Express) {
   app.use(getSession());
   app.use(passport.initialize());
   app.use(passport.session());
+
+  // Skip OIDC setup if REPL_ID is not provided (local development)
+  if (!process.env.REPL_ID) {
+    console.log("⚠️  REPL_ID not set - Using mock authentication for local development");
+
+    // Mock authentication routes for local development
+    app.get("/api/login", async (req, res) => {
+      console.log("Mock login initiated");
+
+      // Create a mock user session
+      const mockUser = {
+        claims: {
+          sub: "local-dev-user",
+          email: "dev@localhost",
+          first_name: "Dev",
+          last_name: "User",
+          profile_image_url: "https://avatar.vercel.sh/dev"
+        },
+        access_token: "mock-token",
+        refresh_token: "mock-refresh",
+        expires_at: Math.floor(Date.now() / 1000) + 3600
+      };
+
+      try {
+        // Upsert mock user to database first
+        await storage.upsertUser({
+          id: mockUser.claims.sub,
+          email: mockUser.claims.email,
+          firstName: mockUser.claims.first_name,
+          lastName: mockUser.claims.last_name,
+          profileImageUrl: mockUser.claims.profile_image_url,
+        });
+        console.log("Mock user created in database");
+
+        // Set up user in session
+        (req as any).login(mockUser, (err: any) => {
+          if (err) {
+            console.error("Login error:", err);
+            return res.status(500).json({ error: "Login failed", details: err.message });
+          }
+
+          // Explicitly save the session before redirecting
+          (req as any).session.save((saveErr: any) => {
+            if (saveErr) {
+              console.error("Session save error:", saveErr);
+              return res.status(500).json({ error: "Session save failed" });
+            }
+
+            console.log("Mock user logged in, session created and saved");
+            res.redirect("/");
+          });
+        });
+      } catch (error) {
+        console.error("Error during mock login:", error);
+        res.status(500).json({ error: "Login failed" });
+      }
+    });
+
+    app.get("/api/logout", (req, res) => {
+      req.logout(() => {
+        res.redirect("/");
+      });
+    });
+
+    // Debug endpoint to check session
+    app.get("/api/debug/session", (req, res) => {
+      res.json({
+        isAuthenticated: req.isAuthenticated(),
+        session: (req as any).session,
+        user: req.user,
+        sessionID: (req as any).sessionID,
+      });
+    });
+
+    // Setup passport serialization for mock user
+    passport.serializeUser((user: Express.User, cb) => cb(null, user));
+    passport.deserializeUser((user: Express.User, cb) => cb(null, user));
+
+    return;
+  }
 
   const config = await getOidcConfig();
 
